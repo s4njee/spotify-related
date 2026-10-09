@@ -1,0 +1,32 @@
+[package]
+name = "spotify-related"
+description = "A cross-platform Spotify player built around good related-track recommendations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+related-core.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+gpui_pre = { package = "gpui-pre", version = "=0.3.5" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.5" }
+gpui-kit = "=0.6.4"
+mkit = { git = "https://github.com/s4njee/mkit", rev = "d5f1a07af49e976c9c72a2270112424d667cd359", default-features = false, features = [
+    "button",
+    "icon-button",
+    "slider",
+    "text-field",
+    "search-field",
+    "segmented-control",
+    "toggle-button",
+    "badge",
+    "empty-state",
+    "inline-alert",
+    "tooltip",
+    "separator",
+    "progress",
+    "status-bar",
+] }
