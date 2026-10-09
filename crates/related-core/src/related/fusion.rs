@@ -100,7 +100,11 @@ impl RelatedTrack {
     }
 }
 
-pub fn fuse(seed: &Seed, lists: &[(SourceId, Vec<Candidate>)], opts: &FusionOptions) -> Vec<RelatedTrack> {
+pub fn fuse(
+    seed: &Seed,
+    lists: &[(SourceId, Vec<Candidate>)],
+    opts: &FusionOptions,
+) -> Vec<RelatedTrack> {
     let seed_key = seed.key();
     let seed_artist = artist_key(&seed.artist);
     let seed_title = title_key(&seed.title);
@@ -152,9 +156,7 @@ pub fn fuse(seed: &Seed, lists: &[(SourceId, Vec<Candidate>)], opts: &FusionOpti
 
     let mut ranked: Vec<(RelatedTrack, f64)> = by_key.into_values().collect();
     ranked.sort_by(|(a, ra), (b, rb)| {
-        rb.partial_cmp(ra)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.key.cmp(&b.key))
+        rb.partial_cmp(ra).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.key.cmp(&b.key))
     });
     let best = ranked.first().map(|(_, r)| *r).unwrap_or(1.0).max(f64::EPSILON);
 
@@ -185,7 +187,12 @@ mod tests {
     }
 
     fn seed() -> Seed {
-        Seed { title: "Blinding Lights".into(), artist: "The Weeknd".into(), isrc: None, spotify_id: None }
+        Seed {
+            title: "Blinding Lights".into(),
+            artist: "The Weeknd".into(),
+            isrc: None,
+            spotify_id: None,
+        }
     }
 
     #[test]
@@ -220,7 +227,11 @@ mod tests {
         let lists = vec![
             (
                 SourceId::LastFm,
-                vec![c("Dua Lipa", "Don't Start Now"), c("Dua Lipa", "Levitating"), c("Dua Lipa", "Physical")],
+                vec![
+                    c("Dua Lipa", "Don't Start Now"),
+                    c("Dua Lipa", "Levitating"),
+                    c("Dua Lipa", "Physical"),
+                ],
             ),
             (SourceId::ListenBrainz, vec![c("Dua Lipa", "Don’t Start Now")]),
         ];

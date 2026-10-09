@@ -41,11 +41,8 @@ impl LastFm {
     /// When a track is too obscure for track-level similarity, fall back to
     /// the top tracks of similar artists.
     fn artist_fallback(&self, seed: &Seed, want: usize) -> Result<Vec<Candidate>> {
-        let similar = self.get(&[
-            ("method", "artist.getsimilar"),
-            ("artist", &seed.artist),
-            ("limit", "8"),
-        ])?;
+        let similar =
+            self.get(&[("method", "artist.getsimilar"), ("artist", &seed.artist), ("limit", "8")])?;
         let mut out = Vec::new();
         for (i, artist) in as_list(similar.pointer("/similarartists/artist")).iter().enumerate() {
             let Some(name) = artist.get("name").and_then(Value::as_str) else { continue };

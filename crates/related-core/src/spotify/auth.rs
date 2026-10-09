@@ -83,23 +83,35 @@ impl PkceSession {
     }
 }
 
-/// Run the whole flow: listen, hand the authorize URL to `open_browser`, wait
-/// for the redirect, and exchange the code. `cancel` aborts the wait.
-pub fn authorize(
-    agent: &Agent,
-    client_id: &str,
-    port: u16,
-    open_browser: impl FnOnce(&str),
-    cancel: Arc<AtomicBool>,
-) -> Result<Token> {
-    let redirect_uri = crate::config::redirect_uri(port);
-    let session = PkceSession::new(client_id, &redirect_uri);
-    // Bind before opening the browser so a fast redirect cannot miss us.
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .with_context(|| format!("port {port} is busy; set redirect_port in the config"))?;
-    open_browser(&session.authorize_url());
-    let code = wait_for_code(&listener, &session.state, Duration::from_secs(300), &cancel)?;
-    session.exchange(agent, &code)
+/// A sign-in that is listening for Spotify's redirect. Open [`Self::url`] in
+/// the browser, then call [`Self::finish`] off the UI thread.
+pub struct PendingAuth {
+    session: PkceSession,
+    listener: TcpListener,
+    url: String,
+}
+
+impl PendingAuth {
+    /// Bind the redirect listener first, so a fast redirect cannot miss it.
+    pub fn start(client_id: &str, port: u16) -> Result<Self> {
+        let session = PkceSession::new(client_id, &crate::config::redirect_uri(port));
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .with_context(|| format!("port {port} is busy; set redirect_port in the config"))?;
+        let url = session.authorize_url();
+        Ok(Self { session, listener, url })
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Wait up to five minutes for the redirect and exchange the code.
+    /// Setting `cancel` aborts the wait.
+    pub fn finish(self, agent: &Agent, cancel: Arc<AtomicBool>) -> Result<Token> {
+        let code =
+            wait_for_code(&self.listener, &self.session.state, Duration::from_secs(300), &cancel)?;
+        self.session.exchange(agent, &code)
+    }
 }
 
 pub fn refresh(agent: &Agent, client_id: &str, refresh_token: &str) -> Result<Token> {

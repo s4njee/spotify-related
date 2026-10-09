@@ -3,7 +3,6 @@ name = "spotify-related"
 description = "A cross-platform Spotify player built around good related-track recommendations"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
 
 [dependencies]

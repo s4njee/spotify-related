@@ -133,8 +133,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file =
-            options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        let mut file = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }

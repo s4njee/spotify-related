@@ -3,7 +3,6 @@ name = "related-core"
 description = "Spotify Web API client and related-track aggregation for spotify-related"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 rust-version.workspace = true
 
 [dependencies]

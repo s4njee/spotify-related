@@ -16,7 +16,8 @@ use crate::normalize::{artist_key, title_key};
 const MUSICBRAINZ: &str = "https://musicbrainz.org/ws/2";
 const SIMILAR: &str = "https://labs.api.listenbrainz.org/similar-recordings/json";
 /// All-time sessions, long window. The dataset with the widest coverage.
-const ALGORITHM: &str = "session_based_days_7500_session_300_contribution_5_threshold_15_limit_50_skip_30";
+const ALGORITHM: &str =
+    "session_based_days_7500_session_300_contribution_5_threshold_15_limit_50_skip_30";
 /// Many recordings of a song have no session data; try a few before giving up.
 const MAX_MBIDS: usize = 4;
 
@@ -69,8 +70,10 @@ impl ListenBrainz {
                 recs.iter()
                     .filter(|r| {
                         let title = r.get("title").and_then(Value::as_str).unwrap_or("");
-                        let artist =
-                            r.pointer("/artist-credit/0/name").and_then(Value::as_str).unwrap_or("");
+                        let artist = r
+                            .pointer("/artist-credit/0/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
                         title_key(title) == want_title && artist_key(artist) == want_artist
                     })
                     .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_owned))
@@ -145,7 +148,9 @@ fn parse_rows(rows: &[Value]) -> Vec<Candidate> {
             })
         })
         .collect();
-    out.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -174,7 +179,10 @@ mod tests {
         assert_eq!(c[0].title, "Don’t Start Now");
         assert_eq!(c[0].similarity, Some(1.0));
         assert_eq!(c[1].similarity, Some(0.5));
-        assert_eq!(c[1].art_url.as_deref(), Some("https://coverartarchive.org/release/r/1-250.jpg"));
+        assert_eq!(
+            c[1].art_url.as_deref(),
+            Some("https://coverartarchive.org/release/r/1-250.jpg")
+        );
     }
 
     #[test]

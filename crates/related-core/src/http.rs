@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ureq::Agent;
+pub use ureq::Agent;
 use ureq::tls::{RootCerts, TlsConfig};
 
 /// Identifies the app to the open-data services. MusicBrainz asks every client
@@ -27,4 +27,13 @@ pub fn agent() -> Agent {
         .tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
         .build()
         .into()
+}
+
+/// Download a small binary resource such as album art. `None` on any failure.
+pub fn fetch_bytes(agent: &Agent, url: &str, max_bytes: u64) -> Option<Vec<u8>> {
+    let mut response = agent.get(url).call().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.body_mut().with_config().limit(max_bytes).read_to_vec().ok()
 }

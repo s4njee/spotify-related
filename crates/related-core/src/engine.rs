@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -10,8 +11,8 @@ use crate::config::{self, Config};
 use crate::model::Track;
 use crate::normalize::{artist_key, title_key};
 use crate::related::{
-    Deezer, FusionOptions, LastFm, ListenBrainz, Provider, RelatedTrack, Resolution, Seed, SourceId,
-    fuse,
+    Deezer, FusionOptions, LastFm, ListenBrainz, Provider, RelatedTrack, Resolution, Seed,
+    SourceId, fuse,
 };
 use crate::spotify::{SpotifyClient, SpotifyError};
 
@@ -41,6 +42,8 @@ pub struct RelatedEngine {
     resolved: Mutex<HashMap<String, Option<Track>>>,
     reports: Mutex<Vec<(String, RelatedReport)>>,
     cache_path: Option<PathBuf>,
+    /// Unix time until which Spotify asked us to stop searching (HTTP 429).
+    search_paused_until: AtomicU64,
 }
 
 impl RelatedEngine {
@@ -68,6 +71,7 @@ impl RelatedEngine {
             resolved: Mutex::new(resolved),
             reports: Mutex::new(Vec::new()),
             cache_path,
+            search_paused_until: AtomicU64::new(0),
         }
     }
 
@@ -153,7 +157,9 @@ impl RelatedEngine {
     /// track `Pending` so a later call can retry it.
     pub fn resolve_many(&self, tracks: &[RelatedTrack]) -> Vec<Resolution> {
         let mut out = vec![Resolution::Pending; tracks.len()];
-        for (chunk_out, chunk) in out.chunks_mut(RESOLVE_WORKERS).zip(tracks.chunks(RESOLVE_WORKERS)) {
+        for (chunk_out, chunk) in
+            out.chunks_mut(RESOLVE_WORKERS).zip(tracks.chunks(RESOLVE_WORKERS))
+        {
             std::thread::scope(|scope| {
                 let handles: Vec<_> =
                     chunk.iter().map(|t| scope.spawn(move || self.resolve(t))).collect();
@@ -170,10 +176,19 @@ impl RelatedEngine {
         if cached != Resolution::Pending {
             return cached;
         }
+        if crate::spotify::auth::now() < self.search_paused_until.load(Ordering::Relaxed) {
+            return Resolution::Pending;
+        }
         match self.search_spotify(track) {
             Ok(found) => {
                 self.resolved.lock().unwrap().insert(track.key.clone(), found.clone());
                 found.map_or(Resolution::NotOnSpotify, Resolution::Found)
+            }
+            Err(SpotifyError::RateLimited(secs)) => {
+                log::warn!("Spotify search rate limited for {secs}s");
+                let until = crate::spotify::auth::now() + secs;
+                self.search_paused_until.fetch_max(until, Ordering::Relaxed);
+                Resolution::Pending
             }
             Err(e) => {
                 log::debug!("resolving {} - {}: {e}", track.artist, track.title);
@@ -184,7 +199,8 @@ impl RelatedEngine {
 
     fn search_spotify(&self, track: &RelatedTrack) -> Result<Option<Track>, SpotifyError> {
         if let Some(isrc) = &track.isrc
-            && let Some(hit) = self.spotify.search_tracks(&format!("isrc:{isrc}"), 1)?.into_iter().next()
+            && let Some(hit) =
+                self.spotify.search_tracks(&format!("isrc:{isrc}"), 1)?.into_iter().next()
         {
             return Ok(Some(hit));
         }
@@ -271,7 +287,13 @@ mod tests {
         let m = best_match(&related("Dua Lipa", "Levitating"), hits).unwrap();
         // "(feat. …)" is packaging, so the first hit is already an exact match.
         assert_eq!(m.artists[0], "Dua Lipa");
-        assert!(best_match(&related("Dua Lipa", "Levitating"), vec![spotify_track("Levitating", "Other")]).is_none());
+        assert!(
+            best_match(
+                &related("Dua Lipa", "Levitating"),
+                vec![spotify_track("Levitating", "Other")]
+            )
+            .is_none()
+        );
     }
 
     #[test]

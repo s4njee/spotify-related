@@ -180,7 +180,8 @@ impl SpotifyClient {
 
     /// Current playback, or `None` when nothing is playing anywhere.
     pub fn playback(&self) -> Result<Option<PlaybackState>> {
-        let v = self.call(Method::Get, "/me/player", &[("additional_types", "track".into())], None)?;
+        let v =
+            self.call(Method::Get, "/me/player", &[("additional_types", "track".into())], None)?;
         Ok(v.map(|v| PlaybackState::from_json(&v)))
     }
 
@@ -291,7 +292,10 @@ impl SpotifyClient {
     }
 }
 
-fn read_response(mut response: ureq::http::Response<ureq::Body>, status: u16) -> Result<Option<Value>> {
+fn read_response(
+    mut response: ureq::http::Response<ureq::Body>,
+    status: u16,
+) -> Result<Option<Value>> {
     let retry_after = response
         .headers()
         .get("retry-after")

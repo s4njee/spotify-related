@@ -12,9 +12,24 @@ use unicode_normalization::char::is_combining_mark;
 /// Words that mark a parenthetical or dash suffix as packaging rather than a
 /// different recording.
 const PACKAGING: &[&str] = &[
-    "feat", "ft", "featuring", "with", "remaster", "remastered", "mono", "stereo", "deluxe",
-    "bonus", "explicit", "clean", "radio edit", "single version", "album version", "original mix",
-    "from", "bonus track",
+    "feat",
+    "ft",
+    "featuring",
+    "with",
+    "remaster",
+    "remastered",
+    "mono",
+    "stereo",
+    "deluxe",
+    "bonus",
+    "explicit",
+    "clean",
+    "radio edit",
+    "single version",
+    "album version",
+    "original mix",
+    "from",
+    "bonus track",
 ];
 
 /// Lowercase, strip accents, and keep only letters, digits and single spaces.
@@ -54,10 +69,10 @@ fn is_packaging(fragment: &str) -> bool {
 pub fn title_key(title: &str) -> String {
     let mut t = title.to_owned();
     // "Song - 2011 Remaster", "Song - Radio Edit"
-    if let Some((head, tail)) = t.split_once(" - ") {
-        if is_packaging(tail) {
-            t = head.to_owned();
-        }
+    if let Some((head, tail)) = t.split_once(" - ")
+        && is_packaging(tail)
+    {
+        t = head.to_owned();
     }
     // "(feat. X)", "[Remastered]"
     let mut out = String::with_capacity(t.len());
@@ -84,7 +99,9 @@ pub fn title_key(title: &str) -> String {
 pub fn artist_key(artist: &str) -> String {
     let lower = artist.to_lowercase();
     let mut cut = lower.len();
-    for sep in [" feat. ", " feat ", " ft. ", " ft ", " featuring ", ", ", " & ", " x ", " vs. ", " with "] {
+    for sep in
+        [" feat. ", " feat ", " ft. ", " ft ", " featuring ", ", ", " & ", " x ", " vs. ", " with "]
+    {
         if let Some(i) = lower.find(sep) {
             cut = cut.min(i);
         }

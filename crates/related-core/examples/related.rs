@@ -33,7 +33,14 @@ fn main() -> anyhow::Result<()> {
     for (i, t) in fuse(&seed, &lists, &FusionOptions::default()).iter().enumerate() {
         let sources: Vec<_> =
             t.hits.iter().map(|h| format!("{}#{}", h.source.label(), h.rank + 1)).collect();
-        println!("{:>2}. {:.2}  {} - {}   [{}]", i + 1, t.score, t.artist, t.title, sources.join(", "));
+        println!(
+            "{:>2}. {:.2}  {} - {}   [{}]",
+            i + 1,
+            t.score,
+            t.artist,
+            t.title,
+            sources.join(", ")
+        );
     }
     Ok(())
 }
