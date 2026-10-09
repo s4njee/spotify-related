@@ -59,6 +59,8 @@ pub struct SpotifyClient {
     client_id: String,
     token: Mutex<Option<Token>>,
     token_path: Option<PathBuf>,
+    /// Device to use when nothing is active, such as the built-in player.
+    preferred_device: Mutex<Option<String>>,
 }
 
 impl SpotifyClient {
@@ -74,6 +76,7 @@ impl SpotifyClient {
             client_id: client_id.to_owned(),
             token: Mutex::new(token),
             token_path,
+            preferred_device: Mutex::new(None),
         }
     }
 
@@ -87,6 +90,21 @@ impl SpotifyClient {
 
     pub fn is_signed_in(&self) -> bool {
         self.token.lock().unwrap().is_some()
+    }
+
+    /// Whether the saved sign-in granted `scope`.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.token.lock().unwrap().as_ref().is_some_and(|t| t.has_scope(scope))
+    }
+
+    /// A valid access token, refreshed if it is about to expire.
+    pub fn fresh_access_token(&self) -> Result<String> {
+        self.access_token(false)
+    }
+
+    /// Prefer the device with this name when playback has to pick one.
+    pub fn set_preferred_device(&self, name: Option<String>) {
+        *self.preferred_device.lock().unwrap() = name;
     }
 
     pub fn set_token(&self, token: Token) {
@@ -114,7 +132,7 @@ impl SpotifyClient {
         let mut guard = self.token.lock().unwrap();
         let token = guard.as_ref().ok_or(SpotifyError::SignedOut)?;
         if force_refresh || token.expires_within(60) {
-            match auth::refresh(&self.agent, &self.client_id, &token.refresh_token) {
+            match auth::refresh(&self.agent, &self.client_id, token) {
                 Ok(fresh) => {
                     self.persist(&fresh);
                     *guard = Some(fresh);
@@ -266,6 +284,10 @@ impl SpotifyClient {
                 let device = devices
                     .iter()
                     .find(|d| d.is_active)
+                    .or_else(|| {
+                        let preferred = self.preferred_device.lock().unwrap().clone()?;
+                        devices.iter().find(|d| d.name == preferred)
+                    })
                     .or_else(|| devices.iter().find(|d| d.kind == "Computer"))
                     .or_else(|| devices.first())
                     .and_then(|d| d.id.clone())

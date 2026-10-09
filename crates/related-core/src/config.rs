@@ -32,6 +32,34 @@ pub struct Config {
     pub max_per_artist: usize,
     /// How many related tracks to show.
     pub list_size: usize,
+    /// Play audio in the app itself, as a Spotify Connect device.
+    pub local_playback: LocalPlaybackConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalPlaybackConfig {
+    pub enabled: bool,
+    /// The name this computer shows in Spotify's device list.
+    pub device_name: String,
+    /// 96, 160 or 320 kbps.
+    pub bitrate: u16,
+    /// Even out loudness between tracks.
+    pub normalise: bool,
+    /// Keep recently played audio on disk (up to 1 GB) to save bandwidth.
+    pub audio_cache: bool,
+}
+
+impl Default for LocalPlaybackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            device_name: "spotify-related".into(),
+            bitrate: 320,
+            normalise: false,
+            audio_cache: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,6 +85,7 @@ impl Default for Config {
             sources: SourceConfig::default(),
             max_per_artist: 2,
             list_size: 40,
+            local_playback: LocalPlaybackConfig::default(),
         }
     }
 }
@@ -114,6 +143,11 @@ pub fn token_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join(APP_DIR).join("token.json"))
 }
 
+/// Reusable credentials and saved volume for the built-in player.
+pub fn librespot_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join(APP_DIR).join("librespot"))
+}
+
 pub fn cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join(APP_DIR))
 }
@@ -151,6 +185,8 @@ mod tests {
         assert_eq!(config.spotify_client_id, "abc");
         assert_eq!(config.redirect_port, DEFAULT_REDIRECT_PORT);
         assert_eq!(config.sources.deezer_weight, 0.6);
+        assert!(config.local_playback.enabled);
+        assert_eq!(config.local_playback.bitrate, 320);
         assert!(config.is_ready());
     }
 

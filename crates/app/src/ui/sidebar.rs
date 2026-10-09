@@ -4,11 +4,13 @@ use gpui_pre::{
     Context, FontWeight, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::*,
     px,
 };
+use mkit::button::{Button, Size, Variant};
 use mkit::core::theme::Theme;
 use related_core::Track;
 
 use super::{muted, section_label};
 use crate::icons::{self, icon};
+use crate::local::LocalState;
 use crate::player::Player;
 
 impl Player {
@@ -50,11 +52,21 @@ impl Player {
         }
 
         let mut devices = div().flex().flex_col().gap(px(1.)).child(section_label("Devices", &t));
-        if self.devices.is_empty() {
+        if let Some(card) = self.render_local_card(cx) {
+            devices = devices.child(card);
+        }
+        if self.devices.is_empty() && self.local.is_none() {
             devices = devices.child(hint("Open Spotify on a computer, phone or speaker.", &t));
         }
         for (i, device) in self.devices.clone().into_iter().enumerate() {
             let active = device.is_active;
+            let caption = if active {
+                "Active".to_owned()
+            } else if self.is_local_device(&device) {
+                "This computer".to_owned()
+            } else {
+                device.kind.clone()
+            };
             devices = devices.child(
                 div()
                     .id(("device", i))
@@ -77,7 +89,7 @@ impl Player {
                         div()
                             .text_size(px(t.typography.caption))
                             .text_color(if active { t.colors.success } else { t.colors.text_muted })
-                            .child(if active { "Active".to_owned() } else { device.kind.clone() }),
+                            .child(caption),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.transfer_to(&device, cx))),
             );
@@ -103,6 +115,113 @@ impl Player {
                     .pt(px(t.spacing.small))
                     .child(devices),
             )
+    }
+
+    /// Status of the built-in player while it is not simply online: connecting,
+    /// waiting for permission, or failed. Once online it is an ordinary device row.
+    fn render_local_card(&self, cx: &mut Context<Self>) -> Option<gpui_pre::AnyElement> {
+        let t = *cx.global::<Theme>();
+        let name = self.config.local_playback.device_name.clone();
+        let online = self.local_state == LocalState::Ready
+            && self.devices.iter().any(|d| self.is_local_device(d));
+        let (dot, title, detail, action): (
+            _,
+            String,
+            Option<String>,
+            Option<gpui_pre::AnyElement>,
+        ) = match &self.local_state {
+            LocalState::Off => return None,
+            _ if online => return None,
+            LocalState::Starting | LocalState::Connecting | LocalState::Ready => {
+                (t.colors.warning, "Connecting".to_owned(), None, None)
+            }
+            LocalState::Reconnecting => (t.colors.warning, "Reconnecting".to_owned(), None, None),
+            LocalState::NeedsAuthorization(reason) => {
+                let action = if self.authorizing_local.is_some() {
+                    div()
+                        .flex()
+                        .gap(px(t.spacing.small))
+                        .child(
+                            Button::new("Waiting for browser")
+                                .id(4001)
+                                .size(Size::Small)
+                                .loading(true)
+                                .disabled(true),
+                        )
+                        .child(
+                            Button::new("Cancel")
+                                .id(4002)
+                                .variant(Variant::Ghost)
+                                .size(Size::Small)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_authorize_local(cx)),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    Button::new("Allow playback here")
+                        .id(4003)
+                        .size(Size::Small)
+                        .on_click(cx.listener(|this, _, _, cx| this.authorize_local(cx)))
+                        .into_any_element()
+                };
+                let detail = match reason {
+                    Some(r) => format!(
+                        "Spotify did not accept the app's sign-in for audio ({r}). Approve playback once in your browser."
+                    ),
+                    None => {
+                        "Approve playback once in your browser to play audio in this app.".into()
+                    }
+                };
+                (t.colors.warning, "Needs permission".to_owned(), Some(detail), Some(action))
+            }
+            LocalState::Failed(e) => (
+                t.colors.danger,
+                "Unavailable".to_owned(),
+                Some(e.clone()),
+                Some(
+                    Button::new("Retry")
+                        .id(4004)
+                        .variant(Variant::Outline)
+                        .size(Size::Small)
+                        .on_click(cx.listener(|this, _, _, cx| this.restart_local(cx)))
+                        .into_any_element(),
+                ),
+            ),
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(t.spacing.small))
+                .p(px(t.spacing.small))
+                .rounded(px(t.radii.small))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.spacing.small))
+                        .child(icon(&icons::SPEAKER, 14., t.colors.text_muted))
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(t.typography.caption))
+                                .text_color(dot)
+                                .child(title),
+                        ),
+                )
+                .when_some(detail, |el, d| {
+                    el.child(
+                        div()
+                            .text_size(px(t.typography.caption))
+                            .text_color(t.colors.text_muted)
+                            .child(d),
+                    )
+                })
+                .when_some(action, |el, a| el.child(a))
+                .into_any_element(),
+        )
     }
 
     /// A compact track row. Click explores its related tracks; the buttons

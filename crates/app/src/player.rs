@@ -20,13 +20,14 @@ use mkit::text_field::TextField;
 use related_core::http::Agent;
 use related_core::related::Resolution;
 use related_core::spotify::SpotifyError;
-use related_core::spotify::auth::PendingAuth;
+use related_core::spotify::auth::{PendingAuth, PkceSession};
 use related_core::{
     Config, Device, FusionOptions, PlaybackState, RelatedEngine, RelatedReport, RepeatMode, Seed,
     SpotifyClient, Track,
 };
 
 use crate::images::{self, ArtCache};
+use crate::local::{LIBRESPOT_REDIRECT, LIBRESPOT_REDIRECT_PORT, LocalDevice, LocalState};
 
 /// How often the UI redraws the progress bar while playing.
 const TICK: Duration = Duration::from_millis(500);
@@ -121,6 +122,14 @@ pub struct Player {
     radio_played: HashSet<String>,
     radio_queued_for: Option<String>,
 
+    // Built-in player
+    pub local: Option<LocalDevice>,
+    pub local_state: LocalState,
+    /// Whether this run already made the built-in player the active device.
+    local_activated: bool,
+    pub authorizing_local: Option<Arc<AtomicBool>>,
+    devices_now: bool,
+
     pub art: ArtCache,
     pub notice: Option<Notice>,
     _subscriptions: Vec<Subscription>,
@@ -186,6 +195,11 @@ impl Player {
                 this.spotify_action(cx, move |s| s.set_volume(percent));
             }),
         ];
+        subscriptions.push(cx.on_app_quit(|this, _| {
+            // Disconnect the built-in device cleanly so it leaves Spotify's device list.
+            let local = this.local.take();
+            async move { drop(local) }
+        }));
         subscriptions.push(cx.on_release(|this, _| {
             if let Some(cancel) = &this.signing_in {
                 cancel.store(true, Ordering::Relaxed);
@@ -236,6 +250,11 @@ impl Player {
             radio: false,
             radio_played: HashSet::new(),
             radio_queued_for: None,
+            local: None,
+            local_state: LocalState::Off,
+            local_activated: false,
+            authorizing_local: None,
+            devices_now: false,
             art: ArtCache::default(),
             notice: None,
             _subscriptions: subscriptions,
@@ -249,6 +268,7 @@ impl Player {
             if core.spotify.is_signed_in() {
                 player.core = Some(core);
                 player.start_polling(cx);
+                player.start_local(cx);
             }
         }
         player
@@ -349,6 +369,7 @@ impl Player {
                         spotify.set_token(token);
                         this.notice = None;
                         this.start_polling(cx);
+                        this.start_local(cx);
                     }
                     Err(e) => this.setup_error = Some(format!("{e:#}")),
                 }
@@ -376,7 +397,148 @@ impl Player {
         self.playback = None;
         self.report = None;
         self.seed = None;
+        // Dropping the device disconnects it; forgetting its credentials makes
+        // the next account sign it in afresh.
+        self.local = None;
+        self.local_state = LocalState::Off;
+        self.local_activated = false;
+        LocalDevice::forget_credentials();
         cx.notify();
+    }
+
+    // ----- built-in player ----------------------------------------------
+
+    /// Start the built-in Connect device, signing it in with the app's own
+    /// token the first time. librespot caches credentials after that.
+    fn start_local(&mut self, cx: &mut Context<Self>) {
+        if self.demo || self.local.is_some() || !self.config.local_playback.enabled {
+            return;
+        }
+        let Some(core) = &self.core else { return };
+        let spotify = core.spotify.clone();
+        spotify.set_preferred_device(Some(self.config.local_playback.device_name.clone()));
+        let use_app_token =
+            !LocalDevice::has_cached_credentials() && spotify.has_scope("streaming");
+        self.local_state = LocalState::Starting;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let token = if use_app_token {
+                cx.background_spawn(async move { spotify.fresh_access_token().ok() }).await
+            } else {
+                None
+            };
+            this.update(cx, |this, cx| {
+                if this.local.is_some() || this.core.is_none() {
+                    return;
+                }
+                match LocalDevice::start(&this.config, token) {
+                    Ok(device) => this.local = Some(device),
+                    Err(e) => this.local_state = LocalState::Failed(e),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn restart_local(&mut self, cx: &mut Context<Self>) {
+        self.local = None;
+        self.local_activated = false;
+        self.start_local(cx);
+    }
+
+    /// Fallback sign-in for the built-in player: authorize librespot's own
+    /// client for the `streaming` scope, as the librespot CLI does.
+    pub fn authorize_local(&mut self, cx: &mut Context<Self>) {
+        if self.authorizing_local.is_some() {
+            return;
+        }
+        let (Some(core), Some(client_id)) = (&self.core, LocalDevice::librespot_client_id()) else {
+            return;
+        };
+        let session = PkceSession::with_scopes(&client_id, LIBRESPOT_REDIRECT, &["streaming"]);
+        let pending = match PendingAuth::start_with(session, LIBRESPOT_REDIRECT_PORT) {
+            Ok(p) => p,
+            Err(e) => {
+                self.notice = Some(Notice { kind: NoticeKind::Error, message: format!("{e:#}") });
+                cx.notify();
+                return;
+            }
+        };
+        cx.open_url(pending.url());
+        let agent = core.agent.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.authorizing_local = Some(cancel.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { pending.finish(&agent, cancel) }).await;
+            this.update(cx, |this, cx| {
+                this.authorizing_local = None;
+                match result {
+                    Ok(token) => match &this.local {
+                        Some(local) => local.authorize(token.access_token),
+                        None => {
+                            if let Ok(device) =
+                                LocalDevice::start(&this.config, Some(token.access_token))
+                            {
+                                this.local = Some(device);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        this.notice =
+                            Some(Notice { kind: NoticeKind::Error, message: format!("{e:#}") })
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn cancel_authorize_local(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.authorizing_local.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        cx.notify();
+    }
+
+    fn tick_local(&mut self, cx: &mut Context<Self>) {
+        let Some(local) = &self.local else { return };
+        let state = local.state();
+        if state != self.local_state {
+            if state == LocalState::Ready {
+                // Show the new device right away instead of at the next device refresh.
+                self.poll_now = true;
+                self.devices_now = true;
+            }
+            self.local_state = state;
+            cx.notify();
+        }
+    }
+
+    /// The first time the built-in device is online and nothing is playing
+    /// anywhere, make it the active device so Play works straight away.
+    fn activate_local_if_idle(&mut self, cx: &mut Context<Self>) {
+        if self.local_activated || self.local_state != LocalState::Ready {
+            return;
+        }
+        let Some(name) = self.local.as_ref().map(|l| l.name().to_owned()) else { return };
+        let Some(id) = self.devices.iter().find(|d| d.name == name).and_then(|d| d.id.clone())
+        else {
+            return;
+        };
+        self.local_activated = true;
+        if self.playback.as_ref().is_some_and(|p| p.device.is_some()) {
+            return;
+        }
+        self.spotify_action(cx, move |s| s.transfer(&id, false));
+    }
+
+    pub fn is_local_device(&self, device: &Device) -> bool {
+        self.local.as_ref().is_some_and(|l| l.name() == device.name)
     }
 
     // ----- playback poll ------------------------------------------------
@@ -387,15 +549,20 @@ impl Player {
             let mut tick: u32 = 0;
             let mut polls: u32 = 0;
             loop {
-                let due = this.update(cx, |this, _| std::mem::take(&mut this.poll_now)).ok();
-                let Some(force) = due else { break };
+                let due = this
+                    .update(cx, |this, cx| {
+                        this.tick_local(cx);
+                        (std::mem::take(&mut this.poll_now), std::mem::take(&mut this.devices_now))
+                    })
+                    .ok();
+                let Some((force, devices_now)) = due else { break };
                 if force || tick.is_multiple_of(POLL_EVERY) {
                     let Ok(Some(spotify)) =
                         this.update(cx, |this, _| this.core.as_ref().map(|c| c.spotify.clone()))
                     else {
                         break;
                     };
-                    let with_devices = polls.is_multiple_of(DEVICES_EVERY);
+                    let with_devices = devices_now || polls.is_multiple_of(DEVICES_EVERY);
                     let result = cx
                         .background_spawn(async move {
                             let playback = spotify.playback();
@@ -465,6 +632,7 @@ impl Player {
         }
         self.sync_seek(cx);
         self.radio_tick(cx);
+        self.activate_local_if_idle(cx);
         cx.notify();
     }
 

@@ -22,8 +22,13 @@ const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
 /// Only playback scopes: the app never reads or changes your library.
-pub const SCOPES: &[&str] =
-    &["user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing"];
+/// `streaming` lets the built-in player sign in as a Spotify Connect device.
+pub const SCOPES: &[&str] = &[
+    "user-read-playback-state",
+    "user-modify-playback-state",
+    "user-read-currently-playing",
+    "streaming",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
@@ -31,11 +36,19 @@ pub struct Token {
     pub refresh_token: String,
     /// Unix seconds.
     pub expires_at: u64,
+    /// Space-separated scopes Spotify granted. Empty for tokens saved by
+    /// versions that did not record them.
+    #[serde(default)]
+    pub scope: String,
 }
 
 impl Token {
     pub fn expires_within(&self, seconds: u64) -> bool {
         now() + seconds >= self.expires_at
+    }
+
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scope.split_whitespace().any(|s| s == scope)
     }
 }
 
@@ -43,18 +56,28 @@ impl Token {
 pub struct PkceSession {
     pub client_id: String,
     pub redirect_uri: String,
+    scopes: Vec<String>,
     verifier: String,
     state: String,
 }
 
 impl PkceSession {
     pub fn new(client_id: &str, redirect_uri: &str) -> Self {
+        Self::with_scopes(client_id, redirect_uri, SCOPES)
+    }
+
+    pub fn with_scopes(client_id: &str, redirect_uri: &str, scopes: &[&str]) -> Self {
         Self {
             client_id: client_id.to_owned(),
             redirect_uri: redirect_uri.to_owned(),
+            scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
             verifier: random_string(64),
             state: random_string(24),
         }
+    }
+
+    fn redirect_path(&self) -> String {
+        url::Url::parse(&self.redirect_uri).map(|u| u.path().to_owned()).unwrap_or_default()
     }
 
     pub fn authorize_url(&self) -> String {
@@ -67,7 +90,7 @@ impl PkceSession {
             .append_pair("code_challenge_method", "S256")
             .append_pair("code_challenge", &challenge)
             .append_pair("state", &self.state)
-            .append_pair("scope", &SCOPES.join(" "));
+            .append_pair("scope", &self.scopes.join(" "));
         url.into()
     }
 
@@ -92,9 +115,14 @@ pub struct PendingAuth {
 }
 
 impl PendingAuth {
-    /// Bind the redirect listener first, so a fast redirect cannot miss it.
+    /// Sign in to the user's own Spotify app with the app's scopes.
     pub fn start(client_id: &str, port: u16) -> Result<Self> {
-        let session = PkceSession::new(client_id, &crate::config::redirect_uri(port));
+        Self::start_with(PkceSession::new(client_id, &crate::config::redirect_uri(port)), port)
+    }
+
+    /// Sign in with any client and redirect on `127.0.0.1:port`. Bind the
+    /// listener first, so a fast redirect cannot miss it.
+    pub fn start_with(session: PkceSession, port: u16) -> Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", port))
             .with_context(|| format!("port {port} is busy; set redirect_port in the config"))?;
         let url = session.authorize_url();
@@ -108,30 +136,37 @@ impl PendingAuth {
     /// Wait up to five minutes for the redirect and exchange the code.
     /// Setting `cancel` aborts the wait.
     pub fn finish(self, agent: &Agent, cancel: Arc<AtomicBool>) -> Result<Token> {
-        let code =
-            wait_for_code(&self.listener, &self.session.state, Duration::from_secs(300), &cancel)?;
+        let path = self.session.redirect_path();
+        let code = wait_for_code(
+            &self.listener,
+            &self.session.state,
+            &path,
+            Duration::from_secs(300),
+            &cancel,
+        )?;
         self.session.exchange(agent, &code)
     }
 }
 
-pub fn refresh(agent: &Agent, client_id: &str, refresh_token: &str) -> Result<Token> {
+pub fn refresh(agent: &Agent, client_id: &str, token: &Token) -> Result<Token> {
     let response = agent.post(TOKEN_URL).send_form([
         ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
+        ("refresh_token", token.refresh_token.as_str()),
         ("client_id", client_id),
     ])?;
-    parse_token_response(response, Some(refresh_token))
+    parse_token_response(response, Some(token))
 }
 
 fn parse_token_response(
     mut response: ureq::http::Response<ureq::Body>,
-    previous_refresh: Option<&str>,
+    previous: Option<&Token>,
 ) -> Result<Token> {
     #[derive(Deserialize)]
     struct Raw {
         access_token: String,
         expires_in: u64,
         refresh_token: Option<String>,
+        scope: Option<String>,
     }
     let status = response.status();
     let body = response.body_mut().read_to_string()?;
@@ -147,19 +182,21 @@ fn parse_token_response(
     let raw: Raw = serde_json::from_str(&body).context("unexpected token response")?;
     let refresh_token = raw
         .refresh_token
-        .or_else(|| previous_refresh.map(str::to_owned))
+        .or_else(|| previous.map(|p| p.refresh_token.clone()))
         .ok_or_else(|| anyhow!("Spotify did not return a refresh token"))?;
     Ok(Token {
         access_token: raw.access_token,
         refresh_token,
         expires_at: now() + raw.expires_in.saturating_sub(30),
+        scope: raw.scope.or_else(|| previous.map(|p| p.scope.clone())).unwrap_or_default(),
     })
 }
 
-/// Accept connections until one carries `/callback?code=…&state=…`.
+/// Accept connections until one carries `<path>?code=…&state=…`.
 fn wait_for_code(
     listener: &TcpListener,
     expected_state: &str,
+    path: &str,
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> Result<String> {
@@ -174,7 +211,7 @@ fn wait_for_code(
         }
         match listener.accept() {
             Ok((stream, _)) => {
-                if let Some(result) = handle_callback(stream, expected_state)? {
+                if let Some(result) = handle_callback(stream, expected_state, path)? {
                     return result;
                 }
             }
@@ -187,14 +224,18 @@ fn wait_for_code(
 }
 
 /// Returns `None` for requests that are not the callback (such as a favicon).
-fn handle_callback(mut stream: TcpStream, expected_state: &str) -> Result<Option<Result<String>>> {
+fn handle_callback(
+    mut stream: TcpStream,
+    expected_state: &str,
+    path: &str,
+) -> Result<Option<Result<String>>> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut line = String::new();
     BufReader::new(&stream).read_line(&mut line)?;
     let target = line.split_whitespace().nth(1).unwrap_or("/");
     let url = url::Url::parse(&format!("http://127.0.0.1{target}"))?;
-    if url.path() != "/callback" {
+    if url.path() != path {
         respond(&mut stream, "404 Not Found", "Not found.");
         return Ok(None);
     }
@@ -259,6 +300,13 @@ mod tests {
         assert_eq!(q["code_challenge_method"], "S256");
         assert_eq!(q["code_challenge"].len(), 43);
         assert!(q["scope"].contains("user-modify-playback-state"));
+        assert!(q["scope"].contains("streaming"));
+        let custom = PkceSession::with_scopes("lib", "http://127.0.0.1:8898/login", &["streaming"]);
+        assert_eq!(custom.redirect_path(), "/login");
+        assert!(
+            custom.authorize_url().contains("scope=streaming&")
+                || custom.authorize_url().ends_with("scope=streaming")
+        );
     }
 
     #[test]
@@ -276,7 +324,8 @@ mod tests {
             out
         });
         let cancel = AtomicBool::new(false);
-        let code = wait_for_code(&listener, "xyz", Duration::from_secs(5), &cancel).unwrap();
+        let code =
+            wait_for_code(&listener, "xyz", "/callback", Duration::from_secs(5), &cancel).unwrap();
         assert_eq!(code, "abc");
         assert!(client.join().unwrap().starts_with("HTTP/1.1 200 OK"));
     }
@@ -290,6 +339,8 @@ mod tests {
             write!(s, "GET /callback?code=abc&state=evil HTTP/1.1\r\n\r\n").unwrap();
         });
         let cancel = AtomicBool::new(false);
-        assert!(wait_for_code(&listener, "xyz", Duration::from_secs(5), &cancel).is_err());
+        assert!(
+            wait_for_code(&listener, "xyz", "/callback", Duration::from_secs(5), &cancel).is_err()
+        );
     }
 }

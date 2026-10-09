@@ -2,6 +2,7 @@
 
 mod icons;
 mod images;
+mod local;
 mod player;
 mod ui;
 
@@ -12,7 +13,10 @@ use gpui_pre::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOpt
 use mkit::core::theme::{SHADCN_DARK, set_theme};
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,librespot=warn"),
+    )
+    .init();
     application().run(|cx: &mut App| {
         gpui_kit::init(cx);
         install_fonts(cx);

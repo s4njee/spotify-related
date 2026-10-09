@@ -142,7 +142,7 @@ impl Player {
                     .gap(px(t.spacing.xsmall))
                     .child(heading("Connect Spotify", t.typography.heading))
                     .child(div().text_color(t.colors.text_muted).child(
-                        "spotify-related controls Spotify on your devices and finds related tracks from Last.fm, ListenBrainz and Deezer. Controlling playback needs Spotify Premium.",
+                        "spotify-related plays Spotify in this app, or on any of your devices, and finds related tracks from Last.fm, ListenBrainz and Deezer. Playback needs Spotify Premium.",
                     )),
             )
             .child(step("1", "Create a Spotify app", step_one.into_any_element()))

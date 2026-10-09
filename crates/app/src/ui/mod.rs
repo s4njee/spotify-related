@@ -132,6 +132,9 @@ impl Player {
                     .child(state),
             )
             .child(device)
+            .when(self.local.is_some(), |el| {
+                el.child(format!("Built-in player: {}", self.local_state.label()))
+            })
             .when_some(resolving, |el, text| el.child(text))
             .when_some(notice, |el, n| {
                 let color = match n.kind {

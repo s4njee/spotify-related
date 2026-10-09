@@ -5,8 +5,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["local-playback"]
+# Play audio in the app through librespot. Without it the app only controls
+# other Spotify Connect devices.
+local-playback = ["dep:local-player"]
+
 [dependencies]
 related-core.workspace = true
+local-player = { path = "../local-player", optional = true }
 anyhow.workspace = true
 log.workspace = true
 env_logger = "0.11"

@@ -1,0 +1,17 @@
+[package]
+name = "local-player"
+description = "Plays Spotify audio in-process by running a librespot Spotify Connect device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+log.workspace = true
+sha2 = "0.10"
+# Same version rodio uses; only to check for an output device before librespot opens one.
+cpal = "0.16"
+url = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-connect = { version = "0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { version = "0.8.0", default-features = false, features = ["rodio-backend", "rustls-tls-native-roots"] }
